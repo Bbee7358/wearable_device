@@ -151,8 +151,9 @@ function formData(extra = {}) {
     target_temp: document.getElementById("targetTemp").value,
     min_temp: document.getElementById("minTemp").value,
     max_temp: document.getElementById("maxTemp").value,
-    start_time: document.getElementById("startTime").value,
-    cooling_minutes: document.getElementById("coolingMinutes").value,
+    arrival_time: document.getElementById("arrivalTime")?.value,
+    ramp_minutes: document.getElementById("rampMinutes")?.value,
+    hold_minutes: document.getElementById("holdMinutes")?.value,
     csv_file: document.getElementById("csvFile").value,
     ...extra
   };
@@ -260,6 +261,11 @@ async function scheduleStart() {
   await updateStatus();
 }
 
+async function cancelSchedule() {
+  await postJson("/cancel_schedule", {});
+  await updateStatus();
+}
+
 async function startNow() {
   await postJson("/start_now", formData());
   await updateStatus();
@@ -308,7 +314,28 @@ async function sendSimple(url) {
 }
 
 function downloadCsv() {
-  window.location.href = "/download_csv";
+  const filename = document.getElementById("csvFile").value;
+  window.location.href = `/download_csv?filename=${encodeURIComponent(filename)}`;
+}
+
+function defaultArrivalTime() {
+  const date = new Date(Date.now() + 30 * 60 * 1000);
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function updateCurrentTimeLabel() {
+  const label = document.getElementById("currentTimeLabel");
+  if (!label) {
+    return;
+  }
+
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  const seconds = String(now.getSeconds()).padStart(2, "0");
+  label.textContent = `${hours}:${minutes}:${seconds}`;
 }
 
 function showValue(value, suffix = "") {
@@ -476,10 +503,13 @@ function updateTemperatureGauge(currentTemp, targetTemp) {
   if (targetInput !== document.activeElement) {
     targetInput.value = formatInputTemperature(toTemperatureNumber(targetValue, GAUGE_MIN_TEMP));
   }
-  gauge.style.setProperty("--current-label-x", `${currentLabelPoint.x}px`);
-  gauge.style.setProperty("--current-label-y", `${currentLabelPoint.y}px`);
-  gauge.style.setProperty("--target-label-x", `${targetLabelPoint.x}px`);
-  gauge.style.setProperty("--target-label-y", `${targetLabelPoint.y}px`);
+  const gaugeScale = gauge.clientWidth / 320;
+  gauge.style.setProperty("--gauge-scale", gaugeScale.toFixed(4));
+  gauge.style.setProperty("--current-label-x", `${currentLabelPoint.x * gaugeScale}px`);
+  gauge.style.setProperty("--current-label-y", `${currentLabelPoint.y * gaugeScale}px`);
+  gauge.style.setProperty("--current-label-width", `${240 * gaugeScale}px`);
+  gauge.style.setProperty("--target-label-x", `${targetLabelPoint.x * gaugeScale}px`);
+  gauge.style.setProperty("--target-label-y", `${targetLabelPoint.y * gaugeScale}px`);
 }
 
 function setupGaugeDrag() {
@@ -584,10 +614,15 @@ async function updateStatus() {
   setText("arduinoState", showValue(data.arduino_state));
   setText("error", showValue(data.error));
   setText("lastReceived", showValue(data.last_received));
-  setText("logging", data.logging ? "保存中: 時刻・温度・心拍数" : "時刻・温度・心拍数");
+  setText("logging", data.logging ? "収集中: 時刻・温度・心拍数" : "時刻・温度・心拍数");
   setText("scheduleState", showValue(data.schedule_state));
   setText("scheduledStart", showValue(data.scheduled_start));
+  setText("scheduledArrival", showValue(data.scheduled_arrival));
   setText("scheduledEnd", showValue(data.scheduled_end));
+  setText("rampMinutesStatus", showValue(data.ramp_minutes));
+  setText("scheduleSummary", data.schedule_state && data.schedule_state !== "未設定"
+    ? `${data.schedule_state}${data.scheduled_arrival ? " / " + data.scheduled_arrival.split(" ").pop().slice(0, 5) : ""}`
+    : "未設定");
   setText("statusCount", showValue(data.status_count));
   setText("parseErrorCount", showValue(data.parse_error_count));
   setText("waitingForStatus", data.waiting_for_status ? "待機中" : "なし");
@@ -660,6 +695,11 @@ async function refresh() {
 
 initializeCharts();
 setupGaugeDrag();
+const arrivalTimeInput = document.getElementById("arrivalTime");
+if (arrivalTimeInput && !arrivalTimeInput.value) {
+  arrivalTimeInput.value = defaultArrivalTime();
+}
+updateCurrentTimeLabel();
 loadSerialPorts(true);
 refresh();
 document.getElementById("targetTemp")?.addEventListener("input", event => {
@@ -667,4 +707,8 @@ document.getElementById("targetTemp")?.addEventListener("input", event => {
   scheduleTargetUpdate();
 });
 document.getElementById("targetTemp")?.addEventListener("change", scheduleTargetUpdate);
+window.addEventListener("resize", () => {
+  updateTemperatureGauge(latestCurrentTemp, document.getElementById("targetTemp")?.value);
+});
+setInterval(updateCurrentTimeLabel, 1000);
 setInterval(refresh, 1000);

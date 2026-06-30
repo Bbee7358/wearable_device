@@ -47,11 +47,6 @@
           </div>
         </div>
 
-        <div class="field-group">
-          <label for="csvFile">CSVファイル名</label>
-          <input id="csvFile" value="experiment_01.csv" autocomplete="off">
-        </div>
-
         <div class="button-grid">
           <button type="button" onclick="startNow()">今すぐ開始</button>
           <button type="button" class="danger" onclick="stopControl()">停止</button>
@@ -59,6 +54,32 @@
           <button type="button" class="warning-button" onclick="sendSimple('/reset')">RESET</button>
           <button type="button" class="secondary" onclick="sendSimple('/vib_on')">振動ON</button>
           <button type="button" class="secondary" onclick="sendSimple('/vib_off')">振動OFF</button>
+        </div>
+      </section>
+
+      <section class="panel schedule-panel">
+        <div class="section-title">
+          <h2>時刻指定</h2>
+          <span id="scheduleSummary">未設定</span>
+        </div>
+        <div class="schedule-now">現在時刻 <span id="currentTimeLabel">--:--</span></div>
+        <div class="schedule-grid">
+          <div class="field-group">
+            <label for="arrivalTime">到達時刻</label>
+            <input id="arrivalTime" type="time">
+          </div>
+          <div class="field-group">
+            <label for="rampMinutes">変化時間 分</label>
+            <input id="rampMinutes" type="number" min="1" max="240" step="1" value="10">
+          </div>
+          <div class="field-group">
+            <label for="holdMinutes">維持時間 分</label>
+            <input id="holdMinutes" type="number" min="0" max="240" step="1" value="0">
+          </div>
+        </div>
+        <div class="schedule-actions">
+          <button type="button" onclick="scheduleStart()">時刻指定開始</button>
+          <button type="button" class="secondary" onclick="cancelSchedule()">予約解除</button>
         </div>
       </section>
 
@@ -90,6 +111,10 @@
           <h2>CSV出力</h2>
           <span>時刻・温度・心拍数</span>
         </div>
+        <div class="field-group">
+          <label for="csvFile">CSVファイル名</label>
+          <input id="csvFile" value="experiment_01.csv" autocomplete="off">
+        </div>
         <button type="button" class="download-button" onclick="downloadCsv()">CSVをダウンロード</button>
       </section>
     </aside>
@@ -113,12 +138,12 @@
     </section>
   </main>
 
-  <input id="startTime" type="hidden">
-  <input id="coolingMinutes" type="hidden" value="10">
   <span id="lastReceived" hidden></span>
   <span id="scheduleState" hidden></span>
   <span id="scheduledStart" hidden></span>
+  <span id="scheduledArrival" hidden></span>
   <span id="scheduledEnd" hidden></span>
+  <span id="rampMinutesStatus" hidden></span>
   <span id="statusCount" hidden></span>
   <span id="parseErrorCount" hidden></span>
   <span id="waitingForStatus" hidden></span>

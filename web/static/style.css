@@ -32,20 +32,20 @@ h2 {
 }
 
 h1 {
-  font-size: 25px;
+  font-size: 22px;
 }
 
 h2 {
-  font-size: 17px;
+  font-size: 15px;
 }
 
 .dashboard {
   width: 100vw;
   height: 100vh;
-  padding: 12px;
+  padding: 8px;
   display: grid;
-  grid-template-columns: 410px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 370px minmax(0, 1fr);
+  gap: 8px;
   align-items: stretch;
   overflow: hidden;
 }
@@ -54,11 +54,11 @@ h2 {
 .right-column {
   display: grid;
   min-height: 0;
-  gap: 10px;
+  gap: 6px;
 }
 
 .left-column {
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, auto) auto auto auto;
 }
 
 .right-column {
@@ -76,12 +76,25 @@ h2 {
 
 .panel {
   min-height: 0;
-  padding: 12px;
+  padding: 8px 10px;
   overflow: hidden;
 }
 
+.control-panel {
+  display: grid;
+  grid-template-rows: auto auto auto auto;
+  align-content: start;
+  row-gap: 5px;
+}
+
+.control-panel .section-title,
+.schedule-panel .section-title,
+.export-panel .section-title {
+  margin-bottom: 0;
+}
+
 .section-title {
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -90,7 +103,7 @@ h2 {
 
 .section-title span {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 900;
   overflow-wrap: anywhere;
 }
@@ -106,20 +119,35 @@ h2 {
 
 .field-group,
 .target-control {
-  margin-top: 8px;
+  margin-top: 6px;
+}
+
+.control-panel .field-group,
+.control-panel .target-control {
+  margin-top: 0;
 }
 
 .target-control:first-of-type {
   margin-top: 0;
 }
 
+.target-control {
+  min-height: 0;
+  overflow: visible;
+  padding-top: 0;
+}
+
 .temperature-gauge {
   position: relative;
-  width: 320px;
-  height: 252px;
-  margin: 0 auto 2px;
+  --gauge-size: clamp(170px, min(54vw, 23vh), 210px);
+  width: var(--gauge-size);
+  height: calc(var(--gauge-size) * 252 / 320);
+  margin: -2px auto 0;
+  overflow: visible;
+  --gauge-scale: 1;
   --current-label-x: 160px;
   --current-label-y: 84px;
+  --current-label-width: 240px;
   --target-label-x: 160px;
   --target-label-y: 186px;
 }
@@ -127,8 +155,8 @@ h2 {
 .gauge-svg {
   position: absolute;
   inset: 0;
-  width: 320px;
-  height: 252px;
+  width: 100%;
+  height: 100%;
   overflow: visible;
 }
 
@@ -172,10 +200,10 @@ h2 {
   z-index: 4;
   top: var(--current-label-y);
   left: var(--current-label-x);
-  width: 240px;
+  width: var(--current-label-width, 240px);
   transform: translate(-50%, -50%);
   color: #05070a;
-  font-size: 37px;
+  font-size: calc(37px * var(--gauge-scale));
   font-weight: 950;
   line-height: 1;
   pointer-events: none;
@@ -191,7 +219,7 @@ h2 {
   display: flex;
   width: max-content;
   min-width: 0;
-  height: 82px;
+  height: calc(82px * var(--gauge-scale));
   margin: 0;
   align-items: center;
   justify-content: center;
@@ -202,13 +230,13 @@ h2 {
 
 .target-temp-editor input {
   width: 4.35ch;
-  height: 82px;
+  height: calc(82px * var(--gauge-scale));
   border: 0;
   border-radius: 0;
   padding: 0;
   background: transparent;
   color: #05070a;
-  font-size: 62px;
+  font-size: calc(62px * var(--gauge-scale));
   font-weight: 950;
   font-variant-numeric: tabular-nums;
   line-height: 1;
@@ -229,29 +257,29 @@ h2 {
 
 .target-temp-editor span {
   color: #05070a;
-  font-size: 48px;
+  font-size: calc(48px * var(--gauge-scale));
   font-weight: 950;
   line-height: 1;
 }
 
 label {
   display: block;
-  margin: 0 0 6px;
+  margin: 0 0 3px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 900;
 }
 
 input,
 select {
   width: 100%;
-  height: 38px;
+  height: 29px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  padding: 8px 10px;
+  padding: 5px 8px;
   background: #ffffff;
   color: var(--text);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -264,31 +292,51 @@ select:focus {
 .target-row,
 .port-row {
   display: grid;
-  grid-template-columns: 1fr 96px;
-  gap: 8px;
+  grid-template-columns: 1fr 78px;
+  gap: 6px;
 }
 
 .input-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 6px;
+}
+
+.schedule-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr 0.9fr;
+  gap: 6px;
+}
+
+.schedule-now {
+  margin: 2px 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .button-grid,
-.connection-actions {
-  margin-top: 10px;
+.connection-actions,
+.schedule-actions {
+  margin-top: 8px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
+}
+
+.control-panel .button-grid,
+.schedule-actions {
+  margin-top: 0;
 }
 
 button {
-  min-height: 38px;
+  min-height: 30px;
   border: 0;
   border-radius: 7px;
-  padding: 8px 10px;
+  padding: 5px 8px;
   background: var(--navy);
   color: #ffffff;
+  font-size: 13px;
   font-weight: 900;
   cursor: pointer;
   line-height: 1.2;
@@ -313,14 +361,14 @@ button.download-button {
 }
 
 button.compact {
-  min-height: 38px;
-  padding-inline: 8px;
+  min-height: 29px;
+  padding-inline: 7px;
 }
 
 .hint {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -337,24 +385,24 @@ button.compact {
 }
 
 .metric-grid {
-  margin-top: 8px;
+  margin-top: 6px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .metric-grid article {
-  min-height: 50px;
+  min-height: 42px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 8px;
+  padding: 6px;
   background: var(--panel-soft);
 }
 
 .metric-grid span {
   display: block;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 900;
 }
 
@@ -362,20 +410,21 @@ button.compact {
   display: block;
   margin-top: 3px;
   color: var(--text);
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
 .message {
-  min-height: 22px;
-  margin-top: 8px;
+  min-height: 18px;
+  margin-top: 6px;
   color: var(--navy);
   font-weight: 900;
   overflow-wrap: anywhere;
 }
 
 .export-panel .download-button {
+  margin-top: 6px;
   width: 100%;
 }
 
@@ -430,8 +479,10 @@ button.compact {
   .target-row,
   .port-row,
   .input-row,
+  .schedule-grid,
   .button-grid,
   .connection-actions,
+  .schedule-actions,
   .metric-grid {
     grid-template-columns: 1fr;
   }

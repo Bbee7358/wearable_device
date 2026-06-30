@@ -1,11 +1,12 @@
 from datetime import datetime, timedelta
 import csv
+import io
 import os
 import re
 import threading
 import time
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request
 
 try:
     import serial
@@ -25,12 +26,13 @@ BAUD_RATE = 115200
 TEMP_MIN = 10.0
 TEMP_MAX = 37.0
 
-# Webグラフには直近100件だけ返します。CSVには全件保存します。
+# Webグラフには直近の履歴だけ返します。CSV用データはダウンロード時までメモリに保持します。
 HISTORY_LIMIT = 720
 DEBUG_LOG_LIMIT = 200
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = int(os.environ.get("TEMP_CONTROL_PORT", "5050"))
 CSV_HEADER = ["timestamp", "peltier_temp", "heart_rate"]
+SCHEDULE_STEP_SECONDS = 20
 
 SAFETY_ERROR_CODES = {"TEMP_UNDER", "TEMP_OVER"}
 
@@ -51,8 +53,8 @@ schedule_cancel_event = threading.Event()
 history = []
 debug_log = []
 
-csv_file_path = None
-csv_file_initialized = False
+csv_download_name = "experiment_01.csv"
+csv_rows = []
 serial_receive_buffer = ""
 
 
@@ -68,10 +70,12 @@ app_state = {
     "error": "NONE",
     "last_received": "",
     "logging": False,
-    "csv_file": "",
+    "csv_file": csv_download_name,
     "schedule_state": "未設定",
     "scheduled_start": "",
     "scheduled_end": "",
+    "scheduled_arrival": "",
+    "ramp_minutes": "",
     "message": "",
     "warning": "",
     "warning_persistent": False,
@@ -210,6 +214,8 @@ def close_serial_connection():
         app_state["schedule_state"] = "未設定"
         app_state["scheduled_start"] = ""
         app_state["scheduled_end"] = ""
+        app_state["scheduled_arrival"] = ""
+        app_state["ramp_minutes"] = ""
         app_state["logging"] = False
         app_state["warning"] = ""
         app_state["warning_persistent"] = False
@@ -236,58 +242,49 @@ def sanitize_csv_filename(filename):
     return filename
 
 
-def configure_csv_file(filename):
-    """Web画面で指定されたCSVファイル名を保存先として設定します。"""
-    global csv_file_path, csv_file_initialized
+def configure_csv_export(filename, reset_rows=False):
+    """CSVのダウンロード名を設定し、必要ならメモリ上の収集データを初期化します。"""
+    global csv_download_name
 
     safe_name = sanitize_csv_filename(filename)
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    logs_dir = os.path.join(base_dir, "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-
     with csv_lock:
-        csv_file_path = os.path.join(logs_dir, safe_name)
-        if os.path.exists(csv_file_path) and os.path.getsize(csv_file_path) > 0:
-            with open(csv_file_path, newline="", encoding="utf-8") as file:
-                first_row = next(csv.reader(file), [])
-
-            if first_row != CSV_HEADER:
-                stem, extension = os.path.splitext(safe_name)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                csv_file_path = os.path.join(logs_dir, f"{stem}_simple_{timestamp}{extension}")
-
-        csv_file_initialized = os.path.exists(csv_file_path) and os.path.getsize(csv_file_path) > 0
+        csv_download_name = safe_name
+        if reset_rows:
+            csv_rows.clear()
 
     with state_lock:
-        app_state["csv_file"] = csv_file_path
+        app_state["csv_file"] = safe_name
+
+    return safe_name
+
+
+def start_csv_collection(filename):
+    """新しい実験としてCSV用データ収集を開始します。"""
+    configure_csv_export(filename, reset_rows=True)
+    with state_lock:
         app_state["logging"] = True
 
-    return csv_file_path
+
+def stop_csv_collection():
+    """CSV用データ収集を停止します。収集済みデータはダウンロードまでメモリに残します。"""
+    with state_lock:
+        app_state["logging"] = False
 
 
 def append_csv(row):
-    """STATUSを受信するたびに、時刻・ペルチェ温度・心拍数だけをCSVへ追記します。"""
-    global csv_file_initialized
+    """STATUS受信時に、時刻・ペルチェ温度・心拍数だけをメモリへ追加します。"""
+    with state_lock:
+        logging_enabled = app_state["logging"]
 
-    if csv_file_path is None:
-        configure_csv_file("")
+    if not logging_enabled:
+        return
 
     with csv_lock:
-        needs_header = not csv_file_initialized
-        with open(csv_file_path, "a", newline="", encoding="utf-8") as file:
-            writer = csv.writer(file)
-            if needs_header:
-                writer.writerow(CSV_HEADER)
-                csv_file_initialized = True
-
-            writer.writerow([
-                row["timestamp"],
-                row["current_temp"],
-                row["heart_rate"],
-            ])
-
-    with state_lock:
-        app_state["logging"] = True
+        csv_rows.append([
+            row["timestamp"],
+            row["current_temp"],
+            row["heart_rate"],
+        ])
 
 
 def validate_temperature_value(value, name):
@@ -563,7 +560,7 @@ def ensure_reader_thread():
 
 def parse_start_datetime(start_time_text):
     """
-    HH:MM形式の開始時刻をdatetimeに変換します。
+    HH:MM形式の時刻をdatetimeに変換します。
     今日の時刻をすでに過ぎている場合は、翌日の同じ時刻にします。
     """
     try:
@@ -581,49 +578,118 @@ def parse_start_datetime(start_time_text):
     return start_at
 
 
-def schedule_worker(start_at, cooling_minutes, set_command=None):
-    """
-    指定時刻まで待ってSTARTを送信し、冷却時間が終わったらSTOPを送信します。
-    STOPボタンが押された場合はschedule_cancel_eventで中断します。
-    """
-    end_at = start_at + timedelta(minutes=cooling_minutes)
+def parse_non_negative_minutes(value, name):
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}は分数で入力してください。")
+
+    if minutes < 0:
+        raise ValueError(f"{name}は0分以上で入力してください。")
+
+    return minutes
+
+
+def parse_positive_minutes(value, name):
+    minutes = parse_non_negative_minutes(value, name)
+    if minutes <= 0:
+        raise ValueError(f"{name}は1分以上で入力してください。")
+
+    return minutes
+
+
+def wait_for_schedule(seconds):
+    return schedule_cancel_event.wait(max(0, seconds))
+
+
+def interpolate_temperature(start_temp, target_temp, progress):
+    progress = min(1.0, max(0.0, progress))
+    return round((start_temp + (target_temp - start_temp) * progress) * 10) / 10
+
+
+def schedule_worker(arrival_at, ramp_minutes, hold_minutes, target, minimum, maximum, csv_file_name=None):
+    """指定時刻に目標温度へ到達するよう、Web側から段階的にSET_TARGETを送ります。"""
+    ramp_delta = timedelta(minutes=ramp_minutes)
+    ramp_start_at = arrival_at - ramp_delta
+    end_at = arrival_at + timedelta(minutes=hold_minutes)
 
     with state_lock:
         app_state["pc_state"] = "SCHEDULED"
-        app_state["schedule_state"] = "開始待ち"
-        app_state["scheduled_start"] = start_at.strftime("%Y-%m-%d %H:%M:%S")
+        app_state["schedule_state"] = "到達時刻待ち"
+        app_state["scheduled_start"] = ramp_start_at.strftime("%Y-%m-%d %H:%M:%S")
+        app_state["scheduled_arrival"] = arrival_at.strftime("%Y-%m-%d %H:%M:%S")
         app_state["scheduled_end"] = end_at.strftime("%Y-%m-%d %H:%M:%S")
+        app_state["ramp_minutes"] = ramp_minutes
 
-    seconds_until_start = max(0, (start_at - datetime.now()).total_seconds())
-    if schedule_cancel_event.wait(seconds_until_start):
+    seconds_until_start = (ramp_start_at - datetime.now()).total_seconds()
+    if wait_for_schedule(seconds_until_start):
         with state_lock:
             app_state["schedule_state"] = "キャンセル済み"
         return
 
     try:
-        if set_command:
-            send_command(set_command)
-            time.sleep(0.2)
+        with state_lock:
+            current_temp = app_state["current_temp"]
+            fallback_target = app_state["target_temp"]
+
+        start_temp = current_temp if current_temp is not None else fallback_target
+        if start_temp is None:
+            start_temp = target
+
+        initial_target = interpolate_temperature(start_temp, target, 0)
+        send_command(f"SET,{initial_target:.1f},{minimum:.1f},{maximum:.1f}")
+        time.sleep(0.2)
+        start_csv_collection(csv_file_name)
         send_command("START")
         with state_lock:
             app_state["pc_state"] = "CONNECTED"
-            app_state["schedule_state"] = "START送信済み・STATUS待ち"
+            app_state["target_temp"] = initial_target
+            app_state["schedule_state"] = "段階変更中"
             app_state["waiting_for_status"] = True
     except Exception as exc:
         set_message(f"START送信に失敗しました: {exc}", warning=f"START送信に失敗しました: {exc}")
         update_pc_state("ERROR")
         return
 
-    seconds_until_stop = max(0, cooling_minutes * 60)
-    if schedule_cancel_event.wait(seconds_until_stop):
+    ramp_seconds = max(1, ramp_minutes * 60)
+    while True:
+        elapsed = (datetime.now() - ramp_start_at).total_seconds()
+        progress = elapsed / ramp_seconds
+        next_target = interpolate_temperature(start_temp, target, progress)
+
+        try:
+            send_command(f"SET_TARGET,{next_target:.1f}")
+            with state_lock:
+                app_state["target_temp"] = next_target
+                app_state["schedule_state"] = "段階変更中" if progress < 1 else "目標温度到達"
+        except Exception as exc:
+            set_message(f"目標温度変更に失敗しました: {exc}", warning=f"目標温度変更に失敗しました: {exc}")
+            update_pc_state("ERROR")
+            return
+
+        if progress >= 1:
+            break
+
+        remaining = (arrival_at - datetime.now()).total_seconds()
+        if wait_for_schedule(min(SCHEDULE_STEP_SECONDS, max(1, remaining))):
+            stop_csv_collection()
+            with state_lock:
+                app_state["schedule_state"] = "キャンセル済み"
+            return
+
+    if hold_minutes > 0 and wait_for_schedule((end_at - datetime.now()).total_seconds()):
+        stop_csv_collection()
         with state_lock:
             app_state["schedule_state"] = "停止済み"
         return
 
     try:
-        send_command("STOP")
+        if hold_minutes > 0:
+            send_command("STOP")
+        stop_csv_collection()
         with state_lock:
-            app_state["pc_state"] = "STOPPED"
+            if hold_minutes > 0:
+                app_state["pc_state"] = "STOPPED"
             app_state["schedule_state"] = "完了"
     except Exception as exc:
         set_message(f"STOP送信に失敗しました: {exc}", warning=f"STOP送信に失敗しました: {exc}")
@@ -763,7 +829,7 @@ def send_settings():
 
     try:
         command, target, minimum, maximum = make_set_command_from_payload(data)
-        configure_csv_file(data.get("csv_file"))
+        configure_csv_export(data.get("csv_file"))
         send_command(command)
 
         with state_lock:
@@ -790,7 +856,7 @@ def start_now():
             return error_response("ArduinoがERROR状態です。RESETしてWAITに戻してから開始してください。", 409)
 
         set_command, target, minimum, maximum = make_set_command_from_payload(data)
-        configure_csv_file(data.get("csv_file"))
+        start_csv_collection(data.get("csv_file"))
         schedule_cancel_event.set()
         send_command(set_command)
         time.sleep(0.2)
@@ -819,13 +885,20 @@ def schedule_start():
     data = json_payload()
 
     try:
-        set_command, target, minimum, maximum = make_set_command_from_payload(data)
-        start_at = parse_start_datetime(data.get("start_time"))
-        cooling_minutes = int(data.get("cooling_minutes"))
-        if cooling_minutes <= 0:
-            raise ValueError("冷却時間は1分以上で入力してください。")
+        target, minimum, maximum = validate_temperature_set(
+            data.get("target_temp"),
+            data.get("min_temp"),
+            data.get("max_temp"),
+        )
+        arrival_at = parse_start_datetime(data.get("arrival_time") or data.get("start_time"))
+        ramp_minutes = parse_positive_minutes(data.get("ramp_minutes"), "変化時間")
+        hold_minutes = parse_non_negative_minutes(data.get("hold_minutes"), "維持時間")
+        ramp_start_at = arrival_at - timedelta(minutes=ramp_minutes)
+        if ramp_start_at <= datetime.now():
+            raise ValueError("到達時刻までの時間より変化時間が長いです。到達時刻を遅くするか、変化時間を短くしてください。")
 
-        configure_csv_file(data.get("csv_file"))
+        configure_csv_export(data.get("csv_file"), reset_rows=True)
+        stop_csv_collection()
 
         schedule_cancel_event.set()
         time.sleep(0.05)
@@ -833,7 +906,7 @@ def schedule_start():
 
         schedule_thread = threading.Thread(
             target=schedule_worker,
-            args=(start_at, cooling_minutes, set_command),
+            args=(arrival_at, ramp_minutes, hold_minutes, target, minimum, maximum, data.get("csv_file")),
             daemon=True,
         )
         schedule_thread.start()
@@ -842,7 +915,7 @@ def schedule_start():
             app_state["target_temp"] = target
 
         return jsonify({
-            "message": f"{start_at.strftime('%Y-%m-%d %H:%M:%S')} にSETとSTARTを送信するよう予約しました。"
+            "message": f"{arrival_at.strftime('%Y-%m-%d %H:%M:%S')} に{target:.1f}℃へ到達するよう予約しました。"
         })
     except ValueError as exc:
         return error_response(str(exc), 400)
@@ -855,10 +928,12 @@ def stop():
     try:
         schedule_cancel_event.set()
         send_command("STOP")
+        stop_csv_collection()
 
         with state_lock:
             app_state["pc_state"] = "STOPPED"
             app_state["schedule_state"] = "停止済み"
+            app_state["scheduled_arrival"] = ""
             app_state["warning"] = ""
             app_state["waiting_for_status"] = False
 
@@ -909,12 +984,15 @@ def reset():
     try:
         schedule_cancel_event.set()
         send_command("RESET")
+        stop_csv_collection()
 
         with state_lock:
             app_state["pc_state"] = "CONNECTED"
             app_state["schedule_state"] = "未設定"
             app_state["scheduled_start"] = ""
+            app_state["scheduled_arrival"] = ""
             app_state["scheduled_end"] = ""
+            app_state["ramp_minutes"] = ""
             app_state["error"] = "NONE"
             app_state["warning"] = ""
             app_state["waiting_for_status"] = False
@@ -922,6 +1000,21 @@ def reset():
         return jsonify({"message": "RESETを送信しました。"})
     except Exception as exc:
         return jsonify({"error": f"RESET送信に失敗しました: {exc}"}), 500
+
+
+@app.route("/cancel_schedule", methods=["POST"])
+def cancel_schedule():
+    schedule_cancel_event.set()
+    stop_csv_collection()
+    with state_lock:
+        app_state["schedule_state"] = "キャンセル済み"
+        app_state["scheduled_start"] = ""
+        app_state["scheduled_arrival"] = ""
+        app_state["scheduled_end"] = ""
+        app_state["ramp_minutes"] = ""
+        app_state["waiting_for_status"] = False
+
+    return jsonify({"message": "時刻指定をキャンセルしました。"})
 
 
 @app.route("/api/status")
@@ -938,13 +1031,27 @@ def api_history():
 
 @app.route("/download_csv")
 def download_csv():
-    with state_lock:
-        path = app_state["csv_file"]
+    requested_name = request.args.get("filename")
+    if requested_name:
+        configure_csv_export(requested_name)
 
-    if not path or not os.path.exists(path):
-        return jsonify({"error": "出力できるCSVファイルがまだありません。"}), 404
+    with csv_lock:
+        filename = csv_download_name
+        rows = list(csv_rows)
 
-    return send_file(path, as_attachment=True, download_name=os.path.basename(path))
+    if not rows:
+        return jsonify({"error": "出力できるCSVデータがまだありません。"}), 404
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(CSV_HEADER)
+    writer.writerows(rows)
+
+    return Response(
+        buffer.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.route("/api/debug")
