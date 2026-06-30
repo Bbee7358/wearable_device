@@ -24,6 +24,14 @@ const int HEART_SENSOR_PIN = A1;
 const int PELTIER_PWM_PIN = 5;
 const int VIBRATION_PIN = 6;
 
+// Temperature sensor calibration points.
+// analogRead(A0) == 364.80 means 10.0 C.
+// analogRead(A0) == 647.65 means 40.0 C.
+const float TEMP_RAW_AT_10C = 364.80;
+const float TEMP_RAW_AT_40C = 647.65;
+const float TEMP_CAL_LOW_C = 10.0;
+const float TEMP_CAL_HIGH_C = 40.0;
+
 const unsigned long SERIAL_BAUD_RATE = 115200;
 const unsigned long CONTROL_INTERVAL_MS = 500;
 const unsigned long STATUS_INTERVAL_MS = 5000;
@@ -124,8 +132,11 @@ int clampInt(int value, int low, int high) {
 // Replace only this function after the real temperature sensor is chosen.
 float readTemperature() {
   int raw = analogRead(TEMP_SENSOR_PIN);
-  float tempC = mapFloat((float)raw, 0.0, 1023.0, 10.0, 37.0);
-  return tempC;
+  float tempC = mapFloat((float)raw, TEMP_RAW_AT_10C, TEMP_RAW_AT_40C,
+                         TEMP_CAL_LOW_C, TEMP_CAL_HIGH_C);
+
+  // Keep impossible spike values from causing unstable control.
+  return clampFloat(tempC, 0.0, 60.0);
 }
 
 // Temporary heart-rate conversion.
@@ -282,9 +293,9 @@ void handleCommand(String command) {
     minTemp = getCsvField(command, 2).toFloat();
     maxTemp = getCsvField(command, 3).toFloat();
     settingsReceived = true;
-    errorCode = ERROR_NONE;
 
     if (state != RUNNING && state != ERROR_STATE) {
+      errorCode = ERROR_NONE;
       state = WAIT;
     }
 
@@ -298,6 +309,8 @@ void handleCommand(String command) {
       Serial.println("OK,START");
     } else if (!settingsReceived) {
       Serial.println("ERROR,NO_SETTINGS");
+    } else {
+      Serial.println("ERROR,RESET_REQUIRED");
     }
   } else if (name == "STOP") {
     if (state != ERROR_STATE) {

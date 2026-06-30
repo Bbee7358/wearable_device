@@ -1,0 +1,2 @@
+timestamp,current_temp,target_temp,heart_rate,pwm_value,state,error
+2026-07-01 00:19:36,23.1,25.0,101,0,WAIT,NONE
