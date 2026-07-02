@@ -159,14 +159,8 @@ def list_serial_ports():
     return ports
 
 
-def choose_auto_connect_port(ports):
-    """
-    自動接続に使うポートを選びます。
-    ArduinoらしいUSBシリアルを優先し、見つからなければ先頭のポートを使います。
-    """
-    if not ports:
-        return None
-
+def is_preferred_serial_port(port):
+    """Arduino/USBシリアルらしいポートかを判定します。"""
     keywords = [
         "arduino",
         "usbmodem",
@@ -175,14 +169,38 @@ def choose_auto_connect_port(ports):
         "ch340",
         "cp210",
         "wch",
+        "ft232",
     ]
+    text = f"{port.get('device', '')} {port.get('description', '')} {port.get('hwid', '')}".lower()
+    return any(keyword in text for keyword in keywords)
 
-    for port in ports:
-        text = f"{port['device']} {port['description']} {port['hwid']}".lower()
-        if any(keyword in text for keyword in keywords):
+
+def sort_serial_ports(ports):
+    """Arduinoらしいポートを先頭にして、画面で誤選択しにくくします。"""
+    return sorted(ports, key=lambda port: (not is_preferred_serial_port(port), port["device"]))
+
+
+def choose_auto_connect_port(ports):
+    """
+    自動接続に使うポートを選びます。
+    ArduinoらしいUSBシリアルだけを自動接続対象にします。
+    """
+    if not ports:
+        return None
+
+    for port in sort_serial_ports(ports):
+        if is_preferred_serial_port(port):
             return port["device"]
 
-    return ports[0]["device"]
+    return None
+
+
+def is_preferred_port_name(port_name):
+    for port in list_serial_ports():
+        if port["device"] == port_name:
+            return is_preferred_serial_port(port)
+
+    return False
 
 
 def close_serial_connection():
@@ -727,7 +745,7 @@ def api_ports():
             "error": "pyserialがインストールされていません。pip install pyserial を実行してください。",
         }), 500
 
-    return jsonify({"ports": list_serial_ports()})
+    return jsonify({"ports": sort_serial_ports(list_serial_ports())})
 
 
 @app.route("/auto_connect", methods=["POST"])
@@ -738,14 +756,15 @@ def auto_connect():
     if serial is None:
         return jsonify({"error": "pyserialがインストールされていません。pip install pyserial を実行してください。"}), 500
 
-    with state_lock:
-        if app_state["connected"]:
-            return jsonify({"message": f"すでに {app_state['port']} に接続されています。"})
-
     ports = list_serial_ports()
     port_name = choose_auto_connect_port(ports)
     if port_name is None:
-        return jsonify({"error": "接続できるシリアルポートが見つかりませんでした。"}), 404
+        return jsonify({"error": "ArduinoらしいUSBシリアルポートが見つかりませんでした。"}), 404
+
+    with state_lock:
+        current_port = app_state["port"]
+        if app_state["connected"] and current_port == port_name:
+            return jsonify({"message": f"すでに {current_port} に接続されています。", "port": current_port})
 
     try:
         with serial_lock:
@@ -786,6 +805,10 @@ def connect():
     port_name = (data.get("port") or "").strip()
     if not port_name:
         return jsonify({"error": "シリアルポート名を入力してください。"}), 400
+    if not is_preferred_port_name(port_name):
+        preferred = choose_auto_connect_port(list_serial_ports())
+        if preferred:
+            return jsonify({"error": f"{port_name} はArduino用ではなさそうです。{preferred} を選んでください。"}), 400
 
     try:
         with serial_lock:

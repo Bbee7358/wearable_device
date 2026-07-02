@@ -159,6 +159,12 @@ function formData(extra = {}) {
   };
 }
 
+function isPreferredPort(port) {
+  const text = `${port.device || ""} ${port.description || ""} ${port.hwid || ""}`.toLowerCase();
+  return ["arduino", "usbmodem", "usbserial", "ttyacm", "ch340", "cp210", "wch", "ft232"]
+    .some(keyword => text.includes(keyword));
+}
+
 async function postJson(url, payload = {}) {
   const { response, data } = await fetchJson(url, {
     method: "POST",
@@ -199,8 +205,12 @@ async function loadSerialPorts(tryAutoConnect = false) {
       select.appendChild(option);
     }
 
-    if (currentSelection && ports.some(port => port.device === currentSelection)) {
+    const preferredPort = ports.find(isPreferredPort);
+    const currentPort = ports.find(port => port.device === currentSelection);
+    if (currentPort && (!preferredPort || isPreferredPort(currentPort))) {
       select.value = currentSelection;
+    } else if (preferredPort) {
+      select.value = preferredPort.device;
     }
 
     portInfo.textContent = `${ports.length}件のポートを検出しました。`;
