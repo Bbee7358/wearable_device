@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wearable Thermal Control</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <main class="dashboard">
+    <aside class="left-column">
+      <section id="warning" class="warning" aria-live="assertive"></section>
+
+      <section class="panel control-panel">
+        <div class="section-title">
+          <h2>目標温度設定</h2>
+          <span>10.0-37.0 ℃</span>
+        </div>
+
+        <div class="target-control">
+          <div id="temperatureGauge" class="temperature-gauge" aria-label="現在温度と目標温度">
+            <svg class="gauge-svg" viewBox="0 0 320 252" role="img" aria-hidden="true">
+              <path id="gaugeTrack" class="gauge-track"></path>
+              <path id="currentTempArc" class="gauge-current"></path>
+              <polygon id="targetMarker" class="target-marker-shape"></polygon>
+              <circle id="targetMarkerHit" class="target-marker-hit" r="30"></circle>
+            </svg>
+            <div class="current-temp-layer">
+              <span id="gaugeCurrentTemp">-</span>
+            </div>
+            <label class="target-temp-editor" for="targetTemp">
+              <input id="targetTemp" type="number" min="10" max="37" step="0.1" value="25.0" inputmode="decimal">
+              <span>℃</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="input-row">
+          <div class="field-group">
+            <label for="minTemp">最低温度</label>
+            <input id="minTemp" type="number" min="10" max="37" step="0.1" value="10.0">
+          </div>
+          <div class="field-group">
+            <label for="maxTemp">最高温度</label>
+            <input id="maxTemp" type="number" min="10" max="37" step="0.1" value="37.0">
+          </div>
+        </div>
+
+        <div class="button-grid">
+          <button type="button" onclick="startNow()">今すぐ開始</button>
+          <button type="button" class="danger" onclick="stopControl()">停止</button>
+          <button type="button" onclick="sendSettings()">設定送信</button>
+          <button type="button" class="warning-button" onclick="sendSimple('/reset')">RESET</button>
+          <button type="button" class="secondary" onclick="sendSimple('/vib_on')">振動ON</button>
+          <button type="button" class="secondary" onclick="sendSimple('/vib_off')">振動OFF</button>
+        </div>
+      </section>
+
+      <section class="panel schedule-panel">
+        <div class="section-title">
+          <h2>時刻指定</h2>
+          <span id="scheduleSummary">未設定</span>
+        </div>
+        <div class="schedule-now">現在時刻 <span id="currentTimeLabel">--:--</span></div>
+        <div class="schedule-grid">
+          <div class="field-group">
+            <label for="arrivalTime">到達時刻</label>
+            <input id="arrivalTime" type="time">
+          </div>
+          <div class="field-group">
+            <label for="rampMinutes">変化時間 分</label>
+            <input id="rampMinutes" type="number" min="1" max="240" step="1" value="10">
+          </div>
+          <div class="field-group">
+            <label for="holdMinutes">維持時間 分</label>
+            <input id="holdMinutes" type="number" min="0" max="240" step="1" value="0">
+          </div>
+        </div>
+        <div class="schedule-actions">
+          <button type="button" onclick="scheduleStart()">時刻指定開始</button>
+          <button type="button" class="secondary" onclick="cancelSchedule()">予約解除</button>
+        </div>
+      </section>
+
+      <section class="panel connection-panel">
+        <div class="section-title">
+          <h2>接続</h2>
+          <span id="autoReconnectState">Web Serial</span>
+        </div>
+
+        <div class="field-group">
+          <label for="serialStatusText">Arduino</label>
+          <div id="serialStatusText" class="serial-status">未接続</div>
+          <div id="portInfo" class="hint">Chrome/Edgeで接続ボタンを押し、ArduinoのUSBシリアルを選択してください。</div>
+        </div>
+
+        <div class="connection-actions">
+          <button type="button" onclick="connectSerial()">接続</button>
+          <button type="button" class="secondary" onclick="disconnectSerial()">切断</button>
+        </div>
+      </section>
+
+      <section class="panel export-panel">
+        <div class="section-title">
+          <h2>CSV出力</h2>
+          <span>時刻・温度・心拍数</span>
+        </div>
+        <div class="field-group">
+          <label for="csvFile">CSVファイル名</label>
+          <input id="csvFile" value="experiment_01.csv" autocomplete="off">
+        </div>
+        <button type="button" class="download-button" onclick="downloadCsv()">CSVをダウンロード</button>
+      </section>
+    </aside>
+
+    <section class="right-column">
+      <section class="panel chart-panel">
+        <div class="section-title">
+          <h2>温度設定グラフ</h2>
+          <span>最大1時間</span>
+        </div>
+        <canvas id="temperatureChart"></canvas>
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="section-title">
+          <h2>ペルチェPWMグラフ</h2>
+          <span>最大1時間</span>
+        </div>
+        <canvas id="pwmChart"></canvas>
+      </section>
+    </section>
+  </main>
+
+  <span id="lastReceived" hidden></span>
+  <span id="scheduleState" hidden></span>
+  <span id="scheduledStart" hidden></span>
+  <span id="scheduledArrival" hidden></span>
+  <span id="scheduledEnd" hidden></span>
+  <span id="rampMinutesStatus" hidden></span>
+  <span id="statusCount" hidden></span>
+  <span id="parseErrorCount" hidden></span>
+  <span id="waitingForStatus" hidden></span>
+  <span id="connected" hidden></span>
+  <span id="currentTemp" hidden></span>
+  <span id="targetTempStatus" hidden></span>
+  <span id="pwmValue" hidden></span>
+  <span id="heartRate" hidden></span>
+  <span id="arduinoState" hidden></span>
+  <span id="error" hidden></span>
+  <span id="stateSummary" hidden></span>
+  <span id="message" hidden></span>
+  <span id="logging" hidden></span>
+
+  <script src="./app.js"></script>
+</body>
+</html>
