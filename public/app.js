@@ -10,6 +10,7 @@ let serialReader = null;
 let serialWriter = null;
 let serialOutputClosed = null;
 let readLoopActive = false;
+let autoConnectInFlight = false;
 let receiveBuffer = "";
 let loggingEnabled = false;
 let csvRows = [];
@@ -228,6 +229,72 @@ async function sendCommand(command) {
   setMessage(`送信: ${command}`);
 }
 
+function describeSerialPort(port) {
+  if (!port || !port.getInfo) {
+    return "Web Serial";
+  }
+
+  const info = port.getInfo();
+  const parts = [];
+  if (info.usbVendorId !== undefined) {
+    parts.push(`VID ${info.usbVendorId.toString(16).padStart(4, "0")}`);
+  }
+  if (info.usbProductId !== undefined) {
+    parts.push(`PID ${info.usbProductId.toString(16).padStart(4, "0")}`);
+  }
+  return parts.length > 0 ? parts.join(" / ") : "Web Serial";
+}
+
+async function openSerialPort(port, message) {
+  if (serialPort) {
+    setMessage("すでに接続しています。");
+    return;
+  }
+
+  serialPort = port;
+  await serialPort.open({ baudRate: BAUD_RATE });
+
+  const textEncoder = new TextEncoderStream();
+  serialOutputClosed = textEncoder.readable.pipeTo(serialPort.writable);
+  serialWriter = textEncoder.writable.getWriter();
+
+  readLoopActive = true;
+  receiveBuffer = "";
+  appState.connected = true;
+  appState.pc_state = "CONNECTED";
+  appState.port = describeSerialPort(serialPort);
+  setWarning("");
+  updateStatus();
+  readSerialLoop();
+  setMessage(message);
+}
+
+async function autoConnectSerial() {
+  try {
+    assertWebSerialSupported();
+    if (serialPort || autoConnectInFlight) {
+      return;
+    }
+
+    autoConnectInFlight = true;
+    setText("serialStatusText", "自動接続中...");
+    const ports = await navigator.serial.getPorts();
+    if (ports.length === 0) {
+      setMessage("初回は接続ボタンからArduinoを選択してください。次回から自動接続します。");
+      return;
+    }
+
+    await openSerialPort(ports[0], "許可済みポートに自動接続しました。");
+  } catch (error) {
+    await closeSerialPort();
+    setWarning(error.message);
+    setMessage(error.message, true);
+  } finally {
+    autoConnectInFlight = false;
+    updateStatus();
+  }
+}
+
 async function connectSerial() {
   try {
     assertWebSerialSupported();
@@ -236,21 +303,8 @@ async function connectSerial() {
       return;
     }
 
-    serialPort = await navigator.serial.requestPort();
-    await serialPort.open({ baudRate: BAUD_RATE });
-
-    const textEncoder = new TextEncoderStream();
-    serialOutputClosed = textEncoder.readable.pipeTo(serialPort.writable);
-    serialWriter = textEncoder.writable.getWriter();
-
-    readLoopActive = true;
-    appState.connected = true;
-    appState.pc_state = "CONNECTED";
-    appState.port = "Web Serial";
-    setWarning("");
-    updateStatus();
-    readSerialLoop();
-    setMessage("Arduinoに接続しました。");
+    const port = await navigator.serial.requestPort();
+    await openSerialPort(port, "Arduinoに接続しました。次回から自動接続します。");
   } catch (error) {
     await closeSerialPort();
     setWarning(error.message);
@@ -1046,6 +1100,7 @@ function initializeControls() {
 
 window.connectSerial = connectSerial;
 window.disconnectSerial = disconnectSerial;
+window.autoConnectSerial = autoConnectSerial;
 window.sendSettings = sendSettings;
 window.scheduleStart = scheduleStart;
 window.cancelSchedule = cancelSchedule;
@@ -1064,5 +1119,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (!("serial" in navigator)) {
     setWarning("Web Serial APIに対応したChromeまたはEdgeでHTTPSのURLを開いてください。");
+    return;
   }
+
+  navigator.serial.addEventListener("connect", () => {
+    autoConnectSerial();
+  });
+  navigator.serial.addEventListener("disconnect", event => {
+    if (event.target === serialPort) {
+      closeSerialPort().then(() => {
+        setWarning("Arduinoとの接続が切れました。USB接続を確認してください。");
+        updateStatus();
+      });
+    }
+  });
+  autoConnectSerial();
 });
